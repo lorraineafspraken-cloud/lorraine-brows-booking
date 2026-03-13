@@ -1,0 +1,687 @@
+import React, { useEffect, useMemo, useState } from 'react'
+import {
+  CalendarDays,
+  CheckCircle2,
+  Clock3,
+  Lock,
+  Mail,
+  Plus,
+  Scissors,
+  Trash2,
+  User,
+} from 'lucide-react'
+
+const STORAGE_KEY = 'lorraine_salon_booking_simple_v1'
+const SALON_NAME = 'Lorraine Brows'
+const SALON_EMAIL = 'lorraine.afspraken@gmail.com'
+const ADMIN_PIN = '1234'
+
+const WEEK_SCHEDULE = {
+  2: { label: 'Dinsdag', start: '18:00', end: '19:30' },
+  4: { label: 'Donderdag', start: '10:00', end: '19:00' },
+}
+
+const TREATMENTS = [
+  { value: 'Epileren', label: 'Epileren', price: '€10' },
+  { value: 'Verven', label: 'Verven', price: '€10' },
+  { value: 'Epileren en verven', label: 'Epileren en verven', price: '€15' },
+  { value: 'Henna', label: 'Henna', price: '€15' },
+  { value: 'Epileren en henna', label: 'Epileren en henna', price: '€20' },
+  { value: 'Browlift', label: 'Browlift', price: '€35' },
+  { value: 'Browlift incl. verf', label: 'Browlift incl. verf', price: '€40' },
+  { value: 'Wimpers verven', label: 'Wimpers verven', price: '€7' },
+]
+
+const HAIR_REMOVAL = [
+  { label: 'Bovenlip of kin', price: '€5' },
+  { label: 'Gezicht', price: '€10' },
+]
+
+function formatDate(date) {
+  return new Intl.DateTimeFormat('nl-NL', {
+    weekday: 'long',
+    day: '2-digit',
+    month: 'long',
+    year: 'numeric',
+  }).format(date)
+}
+
+function toDateKey(date) {
+  const year = date.getFullYear()
+  const month = `${date.getMonth() + 1}`.padStart(2, '0')
+  const day = `${date.getDate()}`.padStart(2, '0')
+  return `${year}-${month}-${day}`
+}
+
+function addDays(date, days) {
+  const next = new Date(date)
+  next.setDate(next.getDate() + days)
+  return next
+}
+
+function todayAtMidnight() {
+  const d = new Date()
+  d.setHours(0, 0, 0, 0)
+  return d
+}
+
+function timeToMinutes(time) {
+  const [hours, minutes] = time.split(':').map(Number)
+  return hours * 60 + minutes
+}
+
+function minutesToTime(value) {
+  const hours = Math.floor(value / 60)
+  const minutes = value % 60
+  return `${`${hours}`.padStart(2, '0')}:${`${minutes}`.padStart(2, '0')}`
+}
+
+function generateStandardSlots(start, end) {
+  const slots = []
+  let current = timeToMinutes(start)
+  const finish = timeToMinutes(end)
+
+  while (current + 30 <= finish) {
+    slots.push(minutesToTime(current))
+    current += 30
+  }
+
+  return slots
+}
+
+function getUpcomingBookableDates(weeks = 8) {
+  const start = todayAtMidnight()
+  const dates = []
+
+  for (let i = 0; i < weeks * 7; i += 1) {
+    const date = addDays(start, i)
+    const weekday = date.getDay()
+    if (WEEK_SCHEDULE[weekday]) {
+      dates.push(date)
+    }
+  }
+
+  return dates
+}
+
+function loadData() {
+  try {
+    const raw = localStorage.getItem(STORAGE_KEY)
+    if (!raw) {
+      return { bookings: [], customSlots: {} }
+    }
+    const parsed = JSON.parse(raw)
+    return {
+      bookings: Array.isArray(parsed.bookings) ? parsed.bookings : [],
+      customSlots:
+        parsed.customSlots && typeof parsed.customSlots === 'object' ? parsed.customSlots : {},
+    }
+  } catch {
+    return { bookings: [], customSlots: {} }
+  }
+}
+
+function sortTimes(a, b) {
+  return timeToMinutes(a) - timeToMinutes(b)
+}
+
+function getSlotsForDate(dateKey, customSlots) {
+  const date = new Date(`${dateKey}T12:00:00`)
+  const weekday = date.getDay()
+  const standard = WEEK_SCHEDULE[weekday]
+    ? generateStandardSlots(WEEK_SCHEDULE[weekday].start, WEEK_SCHEDULE[weekday].end)
+    : []
+  const extras = Array.isArray(customSlots[dateKey]) ? customSlots[dateKey] : []
+  return [...new Set([...standard, ...extras])].sort(sortTimes)
+}
+
+function isPastSlot(dateKey, time) {
+  const slotDate = new Date(`${dateKey}T${time}:00`)
+  return slotDate.getTime() < Date.now()
+}
+
+function isValidEmail(value) {
+  return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value)
+}
+
+function createIcsData({ name, email, treatment, date, time }) {
+  const start = new Date(`${date}T${time}:00`)
+  const end = new Date(start.getTime() + 30 * 60 * 1000)
+
+  function toIcsDate(d) {
+    const yyyy = d.getUTCFullYear()
+    const mm = `${d.getUTCMonth() + 1}`.padStart(2, '0')
+    const dd = `${d.getUTCDate()}`.padStart(2, '0')
+    const hh = `${d.getUTCHours()}`.padStart(2, '0')
+    const min = `${d.getUTCMinutes()}`.padStart(2, '0')
+    const ss = `${d.getUTCSeconds()}`.padStart(2, '0')
+    return `${yyyy}${mm}${dd}T${hh}${min}${ss}Z`
+  }
+
+  return `BEGIN:VCALENDAR\nVERSION:2.0\nPRODID:-//Lorraine Brows//NL\nBEGIN:VEVENT\nUID:${crypto.randomUUID()}\nDTSTAMP:${toIcsDate(new Date())}\nDTSTART:${toIcsDate(start)}\nDTEND:${toIcsDate(end)}\nSUMMARY:${SALON_NAME} - ${treatment || 'Behandeling'}\nDESCRIPTION:Klant: ${name}\\nEmail: ${email}\nEND:VEVENT\nEND:VCALENDAR`
+}
+
+function downloadIcsFile(booking) {
+  const ics = createIcsData(booking)
+  const blob = new Blob([ics], { type: 'text/calendar;charset=utf-8' })
+  const url = URL.createObjectURL(blob)
+  const link = document.createElement('a')
+  link.href = url
+  link.download = `lorraine-brows-${booking.date}-${booking.time}.ics`
+  document.body.appendChild(link)
+  link.click()
+  document.body.removeChild(link)
+  URL.revokeObjectURL(url)
+}
+
+export default function App() {
+  const [bookings, setBookings] = useState([])
+  const [customSlots, setCustomSlots] = useState({})
+  const [selectedDate, setSelectedDate] = useState('')
+  const [selectedTime, setSelectedTime] = useState('')
+  const [form, setForm] = useState({ name: '', email: '', treatment: '', note: '' })
+  const [bookingMessage, setBookingMessage] = useState('')
+  const [bookingStatus, setBookingStatus] = useState(null)
+  const [adminOpen, setAdminOpen] = useState(false)
+  const [pinInput, setPinInput] = useState('')
+  const [adminUnlocked, setAdminUnlocked] = useState(false)
+  const [adminDate, setAdminDate] = useState('')
+  const [adminTime, setAdminTime] = useState('')
+  const [manualAppointment, setManualAppointment] = useState({
+    name: '',
+    email: '',
+    treatment: '',
+  })
+
+  useEffect(() => {
+    const data = loadData()
+    setBookings(data.bookings)
+    setCustomSlots(data.customSlots)
+  }, [])
+
+  useEffect(() => {
+    localStorage.setItem(STORAGE_KEY, JSON.stringify({ bookings, customSlots }))
+  }, [bookings, customSlots])
+
+  const upcomingDates = useMemo(() => getUpcomingBookableDates(8), [])
+
+  useEffect(() => {
+    if (!selectedDate && upcomingDates.length > 0) {
+      setSelectedDate(toDateKey(upcomingDates[0]))
+    }
+    if (!adminDate && upcomingDates.length > 0) {
+      setAdminDate(toDateKey(upcomingDates[0]))
+    }
+  }, [selectedDate, adminDate, upcomingDates])
+
+  const availableSlots = useMemo(() => {
+    if (!selectedDate) return []
+    const allSlots = getSlotsForDate(selectedDate, customSlots)
+    const taken = new Set(bookings.filter((item) => item.date === selectedDate).map((item) => item.time))
+    return allSlots.filter((slot) => !taken.has(slot) && !isPastSlot(selectedDate, slot))
+  }, [selectedDate, bookings, customSlots])
+
+  useEffect(() => {
+    if (selectedTime && !availableSlots.includes(selectedTime)) {
+      setSelectedTime('')
+    }
+  }, [selectedTime, availableSlots])
+
+  const dayBookings = useMemo(() => {
+    if (!selectedDate) return []
+    return bookings
+      .filter((item) => item.date === selectedDate)
+      .sort((a, b) => sortTimes(a.time, b.time))
+  }, [bookings, selectedDate])
+
+  const adminDayBookings = useMemo(() => {
+    if (!adminDate) return []
+    return bookings
+      .filter((item) => item.date === adminDate)
+      .sort((a, b) => sortTimes(a.time, b.time))
+  }, [bookings, adminDate])
+
+  function handleBooking(e) {
+    e.preventDefault()
+    setBookingMessage('')
+    setBookingStatus(null)
+
+    if (!selectedDate || !selectedTime || !form.name || !form.email) {
+      setBookingMessage('Vul naam, e-mailadres, datum en tijd in.')
+      return
+    }
+
+    if (!isValidEmail(form.email)) {
+      setBookingMessage('Vul een geldig e-mailadres in.')
+      return
+    }
+
+    const alreadyTaken = bookings.some(
+      (item) => item.date === selectedDate && item.time === selectedTime,
+    )
+    if (alreadyTaken) {
+      setBookingMessage('Deze tijd is net geboekt. Kies een ander tijdstip.')
+      return
+    }
+
+    const newBooking = {
+      id: crypto.randomUUID(),
+      date: selectedDate,
+      time: selectedTime,
+      name: form.name,
+      email: form.email,
+      treatment: form.treatment,
+      note: form.note,
+      source: 'online',
+      createdAt: new Date().toISOString(),
+    }
+
+    setBookings((current) => [...current, newBooking])
+    setForm({ name: '', email: '', treatment: '', note: '' })
+    setSelectedTime('')
+    setBookingMessage('Je afspraak is ingepland. Tot snel!')
+    setBookingStatus({ latestBooking: newBooking })
+  }
+
+  function unlockAdmin() {
+    if (pinInput === ADMIN_PIN) {
+      setAdminUnlocked(true)
+      setPinInput('')
+    }
+  }
+
+  function addExtraSlot() {
+    if (!adminDate || !adminTime) return
+    setCustomSlots((current) => {
+      const existing = Array.isArray(current[adminDate]) ? current[adminDate] : []
+      const updated = [...new Set([...existing, adminTime])].sort(sortTimes)
+      return { ...current, [adminDate]: updated }
+    })
+  }
+
+  function addManualAppointment() {
+    if (!adminDate || !adminTime || !manualAppointment.name || !manualAppointment.email) return
+    if (!isValidEmail(manualAppointment.email)) return
+
+    const taken = bookings.some((item) => item.date === adminDate && item.time === adminTime)
+    if (taken) return
+
+    setCustomSlots((current) => {
+      const existing = Array.isArray(current[adminDate]) ? current[adminDate] : []
+      const updated = [...new Set([...existing, adminTime])].sort(sortTimes)
+      return { ...current, [adminDate]: updated }
+    })
+
+    setBookings((current) => [
+      ...current,
+      {
+        id: crypto.randomUUID(),
+        date: adminDate,
+        time: adminTime,
+        name: manualAppointment.name,
+        email: manualAppointment.email,
+        treatment: manualAppointment.treatment,
+        note: 'Handmatig toegevoegd',
+        source: 'admin',
+        createdAt: new Date().toISOString(),
+      },
+    ])
+
+    setManualAppointment({ name: '', email: '', treatment: '' })
+  }
+
+  function deleteBooking(id) {
+    setBookings((current) => current.filter((item) => item.id !== id))
+  }
+
+  return (
+    <div className="page-shell">
+      <div className="page-container">
+        <section className="hero-card card">
+          <div className="hero-grid">
+            <div>
+              <div className="eyebrow-pill">
+                <Scissors size={16} />
+                Online afspraken
+              </div>
+              <p className="eyebrow-text">Brow studio</p>
+              <h1 className="hero-title">{SALON_NAME}</h1>
+              <p className="hero-copy">
+                Boek eenvoudig online een afspraak. Kies je behandeling, bekijk direct de
+                beschikbare tijden en reserveer in een paar klikken jouw afspraak.
+              </p>
+            </div>
+
+            <div className="side-card">
+              <div className="availability-card">
+                <div className="availability-label">Beschikbaar</div>
+                <div className="availability-list">
+                  <div className="availability-item">
+                    <CalendarDays size={16} />
+                    <div>
+                      <div className="availability-day">Dinsdag</div>
+                      <div>18:00 – 19:30</div>
+                    </div>
+                  </div>
+                  <div className="availability-item">
+                    <Clock3 size={16} />
+                    <div>
+                      <div className="availability-day">Donderdag</div>
+                      <div>10:00 – 19:00</div>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </section>
+
+        <section className="card price-card">
+          <div className="price-header">
+            <div>
+              <p className="section-kicker">Prijslijst</p>
+              <h2 className="section-title">Behandelingen</h2>
+            </div>
+            <div className="mail-chip">{SALON_EMAIL}</div>
+          </div>
+
+          <div className="price-grid">
+            <div className="price-panel">
+              <div className="price-panel-title">Wenkbrauwen</div>
+              <div className="price-list">
+                {TREATMENTS.map((item) => (
+                  <div key={item.value} className="price-row">
+                    <span>{item.label}</span>
+                    <span>{item.price}</span>
+                  </div>
+                ))}
+              </div>
+            </div>
+
+            <div className="price-panel">
+              <div className="price-panel-title">Ontharen</div>
+              <div className="price-list">
+                {HAIR_REMOVAL.map((item) => (
+                  <div key={item.label} className="price-row">
+                    <span>{item.label}</span>
+                    <span>{item.price}</span>
+                  </div>
+                ))}
+              </div>
+            </div>
+          </div>
+        </section>
+
+        <section className="booking-grid">
+          <div className="card form-card">
+            <div className="section-kicker">Reserveer jouw moment</div>
+            <h2 className="section-title dark">Boek een afspraak</h2>
+
+            <form onSubmit={handleBooking} className="booking-form">
+              <div className="field-group">
+                <label>Datum</label>
+                <select value={selectedDate} onChange={(e) => setSelectedDate(e.target.value)}>
+                  {upcomingDates.map((date) => {
+                    const value = toDateKey(date)
+                    return (
+                      <option key={value} value={value}>
+                        {formatDate(date)}
+                      </option>
+                    )
+                  })}
+                </select>
+              </div>
+
+              <div className="field-group">
+                <label>Beschikbare tijden</label>
+                <div className="times-wrap">
+                  {availableSlots.length === 0 && (
+                    <div className="empty-box">Geen plekken meer beschikbaar op deze dag.</div>
+                  )}
+                  {availableSlots.map((slot) => (
+                    <button
+                      key={slot}
+                      type="button"
+                      className={selectedTime === slot ? 'time-pill active' : 'time-pill'}
+                      onClick={() => setSelectedTime(slot)}
+                    >
+                      {slot}
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              <div className="field-row">
+                <div className="field-group">
+                  <label>Naam</label>
+                  <input
+                    value={form.name}
+                    onChange={(e) => setForm({ ...form, name: e.target.value })}
+                    placeholder="Voor- en achternaam"
+                  />
+                </div>
+                <div className="field-group">
+                  <label>E-mailadres</label>
+                  <input
+                    type="email"
+                    value={form.email}
+                    onChange={(e) => setForm({ ...form, email: e.target.value })}
+                    placeholder="naam@email.com"
+                  />
+                </div>
+              </div>
+
+              <div className="field-row">
+                <div className="field-group">
+                  <label>Behandeling</label>
+                  <select
+                    value={form.treatment}
+                    onChange={(e) => setForm({ ...form, treatment: e.target.value })}
+                  >
+                    <option value="">Kies een behandeling</option>
+                    {TREATMENTS.map((item) => (
+                      <option key={item.value} value={item.value}>{`${item.label} – ${item.price}`}</option>
+                    ))}
+                  </select>
+                </div>
+                <div className="field-group">
+                  <label>Gekozen tijd</label>
+                  <input value={selectedTime} readOnly placeholder="Kies hierboven een tijd" />
+                </div>
+              </div>
+
+              <div className="field-group">
+                <label>Opmerking</label>
+                <textarea
+                  value={form.note}
+                  onChange={(e) => setForm({ ...form, note: e.target.value })}
+                  placeholder="Extra info of verzoek"
+                />
+              </div>
+
+              <div className="form-actions">
+                <button type="submit" className="primary-button">
+                  Afspraak bevestigen
+                </button>
+                {bookingMessage ? <p className="status-text">{bookingMessage}</p> : null}
+              </div>
+            </form>
+
+            {bookingStatus ? (
+              <div className="confirmation-card">
+                <div className="confirmation-title">
+                  <CheckCircle2 size={16} />
+                  Afspraak opgeslagen
+                </div>
+                <p>De klant kan meteen het agenda-bestand downloaden.</p>
+                <button
+                  type="button"
+                  className="secondary-button"
+                  onClick={() => downloadIcsFile(bookingStatus.latestBooking)}
+                >
+                  Download agenda-bestand (.ics)
+                </button>
+              </div>
+            ) : null}
+          </div>
+
+          <div className="card agenda-card">
+            <div className="section-kicker">Jouw dagoverzicht</div>
+            <h2 className="section-title dark">Agenda</h2>
+            <div className="agenda-date-box">
+              {selectedDate ? formatDate(new Date(`${selectedDate}T12:00:00`)) : 'Geen datum gekozen'}
+            </div>
+
+            {dayBookings.length === 0 ? (
+              <div className="empty-box">Er staan nog geen afspraken op deze dag.</div>
+            ) : (
+              <div className="agenda-list">
+                {dayBookings.map((booking) => (
+                  <div key={booking.id} className="agenda-item">
+                    <div className="agenda-item-top">
+                      <div className="agenda-time">
+                        <Clock3 size={16} />
+                        {booking.time}
+                      </div>
+                      <span className="badge">{booking.source === 'admin' ? 'Handmatig' : 'Online'}</span>
+                    </div>
+                    <div className="agenda-detail">
+                      <User size={16} />
+                      {booking.name}
+                    </div>
+                    <div className="agenda-detail">
+                      <Mail size={16} />
+                      {booking.email}
+                    </div>
+                    {booking.treatment ? <div>Behandeling: {booking.treatment}</div> : null}
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        </section>
+
+        <section className="admin-toggle-wrap">
+          <button className="secondary-button ghost" type="button" onClick={() => setAdminOpen((prev) => !prev)}>
+            <Lock size={16} />
+            Beheer openen
+          </button>
+          <p className="help-text">Beheer pincode is nu tijdelijk 1234.</p>
+        </section>
+
+        {adminOpen ? (
+          <section className="card admin-card">
+            <h2 className="section-title dark">Beheer voor {SALON_NAME}</h2>
+
+            {!adminUnlocked ? (
+              <div className="admin-login">
+                <div className="field-group narrow">
+                  <label>Voer pincode in</label>
+                  <input
+                    type="password"
+                    value={pinInput}
+                    onChange={(e) => setPinInput(e.target.value)}
+                    placeholder="Pincode"
+                  />
+                </div>
+                <button type="button" className="primary-button" onClick={unlockAdmin}>
+                  Inloggen
+                </button>
+              </div>
+            ) : (
+              <>
+                <div className="admin-panel-grid">
+                  <div className="admin-panel">
+                    <div className="field-group">
+                      <label>Datum</label>
+                      <input type="date" value={adminDate} onChange={(e) => setAdminDate(e.target.value)} />
+                    </div>
+                    <div className="field-group">
+                      <label>Tijd</label>
+                      <input
+                        type="time"
+                        step="1800"
+                        value={adminTime}
+                        onChange={(e) => setAdminTime(e.target.value)}
+                      />
+                    </div>
+                    <button type="button" className="primary-button" onClick={addExtraSlot}>
+                      <Plus size={16} />
+                      Extra tijd toevoegen
+                    </button>
+                  </div>
+
+                  <div className="admin-panel wide">
+                    <div className="field-group">
+                      <label>Klantnaam</label>
+                      <input
+                        value={manualAppointment.name}
+                        onChange={(e) =>
+                          setManualAppointment({ ...manualAppointment, name: e.target.value })
+                        }
+                        placeholder="Naam klant"
+                      />
+                    </div>
+                    <div className="field-group">
+                      <label>E-mailadres</label>
+                      <input
+                        type="email"
+                        value={manualAppointment.email}
+                        onChange={(e) =>
+                          setManualAppointment({ ...manualAppointment, email: e.target.value })
+                        }
+                        placeholder="naam@email.com"
+                      />
+                    </div>
+                    <div className="field-group">
+                      <label>Behandeling</label>
+                      <select
+                        value={manualAppointment.treatment}
+                        onChange={(e) =>
+                          setManualAppointment({ ...manualAppointment, treatment: e.target.value })
+                        }
+                      >
+                        <option value="">Kies een behandeling</option>
+                        {TREATMENTS.map((item) => (
+                          <option key={item.value} value={item.value}>{`${item.label} – ${item.price}`}</option>
+                        ))}
+                      </select>
+                    </div>
+                    <button type="button" className="primary-button" onClick={addManualAppointment}>
+                      Afspraak handmatig toevoegen
+                    </button>
+                  </div>
+                </div>
+
+                <div className="admin-list-wrap">
+                  <h3 className="admin-list-title">Afspraken op {adminDate || 'gekozen datum'}</h3>
+                  {adminDayBookings.length === 0 ? (
+                    <div className="empty-box">Geen afspraken op deze dag.</div>
+                  ) : (
+                    adminDayBookings.map((booking) => (
+                      <div key={booking.id} className="admin-item">
+                        <div>
+                          <div className="admin-item-title">{booking.time} · {booking.name}</div>
+                          <div>{booking.email}</div>
+                          {booking.treatment ? <div>{booking.treatment}</div> : null}
+                        </div>
+                        <button
+                          type="button"
+                          className="secondary-button"
+                          onClick={() => deleteBooking(booking.id)}
+                        >
+                          <Trash2 size={16} />
+                          Verwijderen
+                        </button>
+                      </div>
+                    ))
+                  )}
+                </div>
+              </>
+            )}
+          </section>
+        ) : null}
+      </div>
+    </div>
+  )
+}
